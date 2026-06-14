@@ -1,0 +1,116 @@
+From 7bad190929ff2c245166dac4fa31cbdd06c3d4e0 Mon Sep 17 00:00:00 2001
+From: Jun Sun <jsun@junsun.net>
+Date: Sun, 24 May 2026 21:04:20 -0700
+Subject: [PATCH 2/4] debug-userland: Soong-installed init.rc pause (replaces
+ init-binary swap)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The v1/v2 approach of swapping /system/bin/init in staging is fundamentally
+incompatible with SOONG_ONLY mode: Soong fsgen rebuilds the system image from
+its own module-install staging, so any post-build file swap is discarded
+(confirmed: target_files SYSTEM/bin/init shipped the stock 2.4MB ELF, never
+the wrapper).
+
+Replace it with a Soong-native init.rc fragment installed via prebuilt_etc to
+/system/etc/init/ (proven to land in the image — sibling .rc files already do).
+On 'on init' (after ueventd coldboot populates /dev, before fs mounts and the
+gatekeeper wedge), when androidboot.debug_pause_console=hvc20 is set, init
+exec_starts a console shell on /dev/hvc20 and BLOCKS until it exits
+(init.cpp:1260 gates the main loop on !is_exec_service_running(); no timeout).
+The 'console' option gives the shell a controlling terminal (Ctrl-C/job
+control work). Real init untouched; no init.real needed.
+
+Validated against init source before building: rc parse path (init.cpp:7
+parses /system/etc/init), ro.boot.* set before the init trigger
+(property init precedes QueueEventTrigger), su seclabel domain exists, and
+/dev readiness via the coldboot-after-early-init ordering (init.cpp:1211).
+
+Pulled in via PRODUCT_PACKAGES_DEBUG (userdebug/eng only). Pairs with the
+selinux=permissive cmdline (commit 6a56398aa) for the init->su transition.
+
+Change-Id: I7f8d118ab3f0aca64a9a152df28d325b0835510f
+Signed-off-by: Jun Sun <jsun@junsun.net>
+---
+ shared/config/Android.bp          | 10 ++++++++++
+ shared/config/init.debug-pause.rc | 30 ++++++++++++++++++++++++++++++
+ shared/device.mk                  |  4 ++++
+ 3 files changed, 44 insertions(+)
+ create mode 100644 shared/config/init.debug-pause.rc
+
+diff --git a/shared/config/Android.bp b/shared/config/Android.bp
+index ddd1da8ab..5bd3a2400 100644
+--- a/shared/config/Android.bp
++++ b/shared/config/Android.bp
+@@ -44,6 +44,16 @@ prebuilt_etc {
+     installable: false,
+ }
+ 
++// debug-userland: init.rc fragment that pauses init into an interactive
++// shell on /dev/hvc20 when androidboot.debug_pause_console=hvc20 is set.
++// Installs to /system/etc/init/. Pulled in via PRODUCT_PACKAGES_DEBUG so it
++// only lands on userdebug/eng builds.
++prebuilt_etc {
++    name: "init.debug-pause.rc",
++    src: "init.debug-pause.rc",
++    sub_dir: "init",
++}
++
+ prebuilt_etc {
+     name: "p2p_supplicant.conf.cf",
+     src: "p2p_supplicant.conf",
+diff --git a/shared/config/init.debug-pause.rc b/shared/config/init.debug-pause.rc
+new file mode 100644
+index 000000000..135be6950
+--- /dev/null
++++ b/shared/config/init.debug-pause.rc
+@@ -0,0 +1,30 @@
++# debug-userland L2 pause (Soong-installed, replaces the old init-binary swap).
++#
++# When the host launch passes androidboot.debug_pause_console=hvc20 on the
++# guest kernel cmdline, init drops to an interactive root shell on /dev/hvc20
++# at the 'on init' trigger and BLOCKS there until the shell exits.
++#
++# Why 'on init' and not 'on early-init': ueventd coldboot (which creates
++# /dev/hvc20) is queued right after early-init, so /dev isn't fully populated
++# until 'on init'. 'on init' is still well before fs mounts and service start
++# (the gatekeeper/NO_HZ wedge), so we pause ahead of it.
++#
++# exec_start blocks the init main loop (init.cpp gates command execution on
++# !is_exec_service_running()), giving a true pause with no timeout. The
++# 'console' option makes init set up /dev/hvc20 as the controlling terminal,
++# so Ctrl-C / job control work. The real /system/bin/init is untouched.
++#
++# Exit the shell (exit / Ctrl-D) to let init continue to second-stage boot.
++# Without the cmdline flag this file is inert.
++
++service debug_pause /system/bin/sh
++    console hvc20
++    user root
++    group root system
++    seclabel u:r:su:s0
++    oneshot
++    disabled
++
++on init && property:ro.boot.debug_pause_console=hvc20
++    write /dev/kmsg "debug-userland: pausing init on /dev/hvc20 (exit shell to continue)"
++    exec_start debug_pause
+diff --git a/shared/device.mk b/shared/device.mk
+index b31638ad7..b26d2f778 100644
+--- a/shared/device.mk
++++ b/shared/device.mk
+@@ -75,6 +75,10 @@ PRODUCT_PRODUCT_PROPERTIES += \
+     persist.sys.fuse.passthrough.enable=true \
+     remote_provisioning.tee.rkp_only=1
+ 
++# debug-userland: init.rc pause fragment (userdebug/eng only). Inert unless
++# the guest is launched with androidboot.debug_pause_console=hvc20.
++PRODUCT_PACKAGES_DEBUG += init.debug-pause.rc
++
+ # Until we support adb keys on user builds, and fix logcat over serial,
+ # spawn adbd by default without authorization for "adb logcat"
+ ifeq ($(TARGET_BUILD_VARIANT),user)
+-- 
+2.43.0
+

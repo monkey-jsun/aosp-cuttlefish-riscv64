@@ -1,0 +1,138 @@
+From 13ba1adcd730fc14f758bb53d1a8748cb57d31e8 Mon Sep 17 00:00:00 2001
+From: Jun Sun <jsun@junsun.net>
+Date: Sun, 14 Jun 2026 13:12:13 -0700
+Subject: [PATCH 3/4] debug-userland: rewrite pause to v3 multi-phase shape
+
+Supersedes v2's single-shot exec_start (184d811ea):
+- Concurrent debug_console on hvc20 (non-oneshot)
+- Per-phase wait-file gates at init / late-init / post-fs /
+  post-fs-data / boot, each /dev/.continue_<phase>
+- Pre-touch a gate from the on-init shell to skip later phases
+- Activation unchanged: androidboot.debug_pause_console=hvc20;
+  fully inert without the flag
+
+Also: Android.bp gains system_ext_specific:true so the prebuilt_etc
+lands at /system_ext/etc/init/ where init scans (was landing at
+/vendor/etc/init/ and never firing).
+
+Change-Id: Ibcd93c568debe2e77ad48840694c88443e85ad7e
+Signed-off-by: Jun Sun <jsun@junsun.net>
+---
+ shared/config/Android.bp          |  8 +++-
+ shared/config/init.debug-pause.rc | 71 +++++++++++++++++++++++--------
+ 2 files changed, 59 insertions(+), 20 deletions(-)
+
+diff --git a/shared/config/Android.bp b/shared/config/Android.bp
+index 5bd3a2400..d16cb6be5 100644
+--- a/shared/config/Android.bp
++++ b/shared/config/Android.bp
+@@ -46,12 +46,16 @@ prebuilt_etc {
+ 
+ // debug-userland: init.rc fragment that pauses init into an interactive
+ // shell on /dev/hvc20 when androidboot.debug_pause_console=hvc20 is set.
+-// Installs to /system/etc/init/. Pulled in via PRODUCT_PACKAGES_DEBUG so it
+-// only lands on userdebug/eng builds.
++// Installs to /system_ext/etc/init/ (NOT /system: a device-specific file on
++// the generic system partition violates generic_system.mk's artifact-path
++// requirement). second-stage init parses /system_ext/etc/init, and system_ext
++// keeps system-domain semantics (vs vendor_init under vendor:).
++// Pulled in via PRODUCT_PACKAGES_DEBUG so it only lands on userdebug/eng.
+ prebuilt_etc {
+     name: "init.debug-pause.rc",
+     src: "init.debug-pause.rc",
+     sub_dir: "init",
++    system_ext_specific: true,
+ }
+ 
+ prebuilt_etc {
+diff --git a/shared/config/init.debug-pause.rc b/shared/config/init.debug-pause.rc
+index 135be6950..b87014c74 100644
+--- a/shared/config/init.debug-pause.rc
++++ b/shared/config/init.debug-pause.rc
+@@ -1,30 +1,65 @@
+-# debug-userland L2 pause (Soong-installed, replaces the old init-binary swap).
++# debug-userland pause / per-phase gating (Soong-installed).
+ #
+ # When the host launch passes androidboot.debug_pause_console=hvc20 on the
+-# guest kernel cmdline, init drops to an interactive root shell on /dev/hvc20
+-# at the 'on init' trigger and BLOCKS there until the shell exits.
++# guest kernel cmdline, init starts a CONCURRENT interactive root shell on
++# /dev/hvc20 at 'on init' and PAUSES the init main loop at several phases
++# until the matching gate file is touched. Without the flag this file is
++# inert (the action bodies never run).
+ #
+-# Why 'on init' and not 'on early-init': ueventd coldboot (which creates
+-# /dev/hvc20) is queued right after early-init, so /dev isn't fully populated
+-# until 'on init'. 'on init' is still well before fs mounts and service start
+-# (the gatekeeper/NO_HZ wedge), so we pause ahead of it.
++# Phases gated (each on its own gate file in /dev/):
++#   on init           -> /dev/.continue_init
++#   on late-init      -> /dev/.continue_late_init
++#   on post-fs        -> /dev/.continue_post_fs
++#   on post-fs-data   -> /dev/.continue_post_fs_data
++#   on boot           -> /dev/.continue_boot
+ #
+-# exec_start blocks the init main loop (init.cpp gates command execution on
+-# !is_exec_service_running()), giving a true pause with no timeout. The
+-# 'console' option makes init set up /dev/hvc20 as the controlling terminal,
+-# so Ctrl-C / job control work. The real /system/bin/init is untouched.
++# Runtime selectivity (no rebuild needed): from the on-init shell, pre-touch
++# any later phase's gate file to skip its pause. e.g.:
++#   touch /dev/.continue_late_init   # skip late-init pause
++#   touch /dev/.continue_init        # release on-init (proceed)
++# Leave a gate absent to pause at that phase.
+ #
+-# Exit the shell (exit / Ctrl-D) to let init continue to second-stage boot.
+-# Without the cmdline flag this file is inert.
++# Important caveats:
++# - 'wait' is a 10ms busy-poll on init's main thread (util.cpp:wait_for_file).
++#   While init is in wait it does NOT reap SIGCHLD, restart services, or
++#   process control sockets. So if the debug_console shell EXITS during a
++#   pause, it will NOT auto-restart until init resumes — effectively a
++#   reboot. Use the gate file to release, don't 'exit' the shell.
++# - Default timeout if not specified is 5s (kCommandRetryTimeout). We pass
++#   86400 (24h) so the pause is effectively unbounded; on timeout init logs
++#   a warning and continues (safe failure mode — boot proceeds).
++# - The kmsg announcement lands on /dev/console (hvc0 on K3), not hvc20.
++#   The shell prompt is on hvc20. Watch both.
++# - Property writes during a pause ARE accepted (property service runs in a
++#   separate thread) but init won't ACT on them until release.
+ 
+-service debug_pause /system/bin/sh
++service debug_console /system/bin/sh
+     console hvc20
+     user root
+     group root system
+     seclabel u:r:su:s0
+-    oneshot
+-    disabled
+ 
+ on init && property:ro.boot.debug_pause_console=hvc20
+-    write /dev/kmsg "debug-userland: pausing init on /dev/hvc20 (exit shell to continue)"
+-    exec_start debug_pause
++    start debug_console
++    write /dev/kmsg "debug-userland: paused at on-init; touch /dev/.continue_init to release"
++    wait /dev/.continue_init 86400
++
++on late-init && property:ro.boot.debug_pause_console=hvc20
++    start debug_console
++    write /dev/kmsg "debug-userland: paused at late-init; touch /dev/.continue_late_init to release"
++    wait /dev/.continue_late_init 86400
++
++on post-fs && property:ro.boot.debug_pause_console=hvc20
++    start debug_console
++    write /dev/kmsg "debug-userland: paused at post-fs; touch /dev/.continue_post_fs to release"
++    wait /dev/.continue_post_fs 86400
++
++on post-fs-data && property:ro.boot.debug_pause_console=hvc20
++    start debug_console
++    write /dev/kmsg "debug-userland: paused at post-fs-data; touch /dev/.continue_post_fs_data to release"
++    wait /dev/.continue_post_fs_data 86400
++
++on boot && property:ro.boot.debug_pause_console=hvc20
++    start debug_console
++    write /dev/kmsg "debug-userland: paused at boot; touch /dev/.continue_boot to release"
++    wait /dev/.continue_boot 86400
+-- 
+2.43.0
+

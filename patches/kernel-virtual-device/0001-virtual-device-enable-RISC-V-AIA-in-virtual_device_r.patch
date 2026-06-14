@@ -1,0 +1,64 @@
+From 08a7cd8e6da5ac6ad79ba0763edf026f7bf99245 Mon Sep 17 00:00:00 2001
+From: Jun Sun <jsun@junsun.net>
+Date: Sun, 14 Jun 2026 13:15:16 -0700
+Subject: [PATCH] virtual-device: enable RISC-V AIA in virtual_device_riscv64
+
+AIA APLIC + IMSIC drivers landed upstream in Linux 6.10 but their
+Kconfig symbols (RISCV_INTC, RISCV_APLIC, RISCV_IMSIC) are 'bool'
+with no default and no platform select, so they don't get enabled by
+gki_defconfig, the riscv64 defconfig, or any stock virtual_device
+fragment. Add a new post_defconfig_fragment to force them =y for
+cuttlefish riscv64 guests.
+
+Without this the resulting kernel boots without IMSIC/APLIC support,
+defeating the purpose of running on a 6.10+ kernel.
+
+Change-Id: I0c539867d814ebc46af4a11325e6864b13e6fa62
+Signed-off-by: Jun Sun <jsun@junsun.net>
+---
+ BUILD.bazel          |  1 +
+ riscv64_aia.fragment | 20 ++++++++++++++++++++
+ 2 files changed, 21 insertions(+)
+ create mode 100644 riscv64_aia.fragment
+
+diff --git a/BUILD.bazel b/BUILD.bazel
+index 71efe75..fb2dff6 100644
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -744,6 +744,7 @@ kernel_build(
+     post_defconfig_fragments = [
+         "virtual_device_core.fragment",
+         "virtual_device.fragment",
++        "riscv64_aia.fragment",
+     ],
+     strip_modules = True,
+     visibility = ["//common-modules:__subpackages__"],
+diff --git a/riscv64_aia.fragment b/riscv64_aia.fragment
+new file mode 100644
+index 0000000..883fdf5
+--- /dev/null
++++ b/riscv64_aia.fragment
+@@ -0,0 +1,20 @@
++# Enable RISC-V Advanced Interrupt Architecture (AIA).
++#
++# AIA APLIC + IMSIC drivers landed in upstream Linux 6.10 (May 2024) but the
++# Kconfig symbols are bool with no default and no platform-level select, so
++# they are NOT enabled by gki_defconfig, the riscv64 defconfig, or any of the
++# stock virtual_device.fragment files. Required for cuttlefish-on-riscv64
++# guests that boot under crosvm/QEMU with AIA topology in DT.
++#
++# Source of truth for these driver files:
++#   drivers/irqchip/irq-riscv-intc.c
++#   drivers/irqchip/irq-riscv-aplic-{main,direct,msi}.c
++#   drivers/irqchip/irq-riscv-imsic-{early,platform,state}.c
++CONFIG_RISCV_INTC=y
++CONFIG_RISCV_APLIC=y
++CONFIG_RISCV_IMSIC=y
++
++# Disable -Werror for kernel module compiles (matches arm.fragment).
++# Without this, clang -Warray-bounds in include/linux/signal.h's
++# _SIG_SET_BINOP dead-code branches fails the build under riscv64.
++# CONFIG_WERROR is not set
+-- 
+2.43.0
+

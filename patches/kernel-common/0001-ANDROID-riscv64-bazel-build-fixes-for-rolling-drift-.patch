@@ -1,0 +1,70 @@
+From 713009a8eff98b728bc74b506249b5b81f48e0b4 Mon Sep 17 00:00:00 2001
+From: Jun Sun <jsun@junsun.net>
+Date: Tue, 19 May 2026 18:42:26 -0700
+Subject: [PATCH] ANDROID: riscv64: bazel build fixes for rolling-drift on
+ android-mainline
+
+Two local workarounds for upstream drift that breaks the riscv64
+//common:kernel_riscv64_dist target on android-mainline-riscv64 as
+of 2026-05:
+
+- BUILD.bazel: kernel_riscv64.outs was using DEFAULT_GKI_OUTS, which
+  expects 5 image formats (Image, Image.lz4, Image.lzma, Image.gz,
+  Image.zst). The riscv64 make goals only build 3 (Image, Image.lz4,
+  Image.gz). Override outs to just the produced set.
+
+- bazel/constants.scl: RUSTC_VERSION pinned to 1.94.1.p1 from 1.91.1.
+  1.91.1 is no longer available from the rustc prebuilt distribution
+  for this branch; the build fails at toolchain-fetch time.
+
+Local-only workarounds; upstream tree is expected to fix both via
+kleaf machinery in due course.
+
+Change-Id: Idef68b2d1348691ed1f309ec8a8a17d3db7931d3
+Signed-off-by: Jun Sun <jsun@junsun.net>
+---
+ BUILD.bazel         | 15 ++++++++++++++-
+ bazel/constants.scl |  2 +-
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/BUILD.bazel b/BUILD.bazel
+index f8c22ca1bf72..79cbc9e57dbc 100644
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -315,7 +315,20 @@ Consider building @//common:kernel_aarch64 with:
+ 
+ common_kernel(
+     name = "kernel_riscv64",
+-    outs = DEFAULT_GKI_OUTS,
++    # NOTE: DEFAULT_GKI_OUTS expects 5 image formats (Image, Image.lz4, Image.lzma,
++    # Image.gz, Image.zst), but _GKI_RISCV64_MAKE_GOALS only builds 3, and AOSP
++    # cuttlefish only consumes the uncompressed `Image` (renamed kernel-mainline).
++    # Override to just the formats actually produced.
++    outs = [
++        "System.map",
++        "modules.builtin",
++        "modules.builtin.modinfo",
++        "vmlinux",
++        "vmlinux.symvers",
++        "Image",
++        "Image.lz4",
++        "Image.gz",
++    ],
+     arch = "riscv64",
+     build_gki_artifacts = True,
+     ddk_module_headers = [":all_headers_riscv64"],
+diff --git a/bazel/constants.scl b/bazel/constants.scl
+index 469caf819e22..b610abee2bf0 100644
+--- a/bazel/constants.scl
++++ b/bazel/constants.scl
+@@ -1,6 +1,6 @@
+ BRANCH="android-mainline"
+ CLANG_VERSION="r584948b"
+-RUSTC_VERSION="1.91.1"
++RUSTC_VERSION="1.94.1.p1"
+ AARCH64_NDK_TRIPLE="aarch64-linux-android31"
+ X86_64_NDK_TRIPLE="x86_64-linux-android31"
+ ARM_NDK_TRIPLE="armv7a-linux-androideabi31"
+-- 
+2.43.0
+

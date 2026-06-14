@@ -1,0 +1,49 @@
+From 828f206be0fcd7e73cbcaad29f4a71e9aef2fb4a Mon Sep 17 00:00:00 2001
+From: Jun Sun <jsun@junsun.net>
+Date: Sun, 24 May 2026 09:43:38 -0700
+Subject: [PATCH 1/4] debug-userland: switch SELinux to permissive for debug
+ shell (L2)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds androidboot.selinux=permissive to the kernel cmdline so the L2 init
+wrapper (an /system/bin/sh script that intercepts second-stage init when
+androidboot.debug_pause_init=1) can transition to the shell domain without
+being blocked by enforcing policy. Also lets strace and other shell-spawned
+debug tools ptrace targets during the NO_HZ wedge hunt.
+
+The wrapper script itself is intentionally NOT in this commit — it lives in
+debug-userland/init-debug-wrapper.sh outside the AOSP tree, installed into
+the build output via debug-userland/swap-init.sh as a post-build step. This
+keeps the AOSP-tree footprint minimal (BoardConfig.mk only) and the wrapper
+swap reversible without an AOSP rebuild.
+
+Reverting this commit restores enforcing SELinux but leaves L1 intact.
+
+Change-Id: I7e02c16b5635b686585b6d881d1bd59d3fa020e3
+Signed-off-by: Jun Sun <jsun@junsun.net>
+---
+ shared/BoardConfig.mk | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/shared/BoardConfig.mk b/shared/BoardConfig.mk
+index a86d6523b..daae06375 100644
+--- a/shared/BoardConfig.mk
++++ b/shared/BoardConfig.mk
+@@ -411,6 +411,12 @@ BOARD_KERNEL_CMDLINE += firmware_class.path=/vendor/etc/
+ BOARD_KERNEL_CMDLINE += loop.max_part=7
+ BOARD_KERNEL_CMDLINE += init=/init
+ 
++# debug-userland: run SELinux in permissive mode so the L2 init wrapper can
++# exec /system/bin/sh from init's domain and shell-spawned debug tools
++# (strace, etc.) can ptrace targets. Required by the out-of-tree init wrapper
++# that lives in debug-userland/. No effect when the wrapper isn't installed.
++BOARD_KERNEL_CMDLINE += androidboot.selinux=permissive
++
+ BOARD_BOOTCONFIG += androidboot.hardware=cutf_cvm
+ 
+ # TODO(b/182417593): vsock transport is a module on some kernels and builtin
+-- 
+2.43.0
+

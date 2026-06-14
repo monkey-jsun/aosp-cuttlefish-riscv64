@@ -1,0 +1,54 @@
+From 88d182f5d68b3ec8839218679fcef0b22080718f Mon Sep 17 00:00:00 2001
+From: Jun Sun <jsun@junsun.net>
+Date: Sun, 14 Jun 2026 13:11:39 -0700
+Subject: [PATCH 4/4] assemble_cvd: default riscv64 to guest-side
+ keymint/gatekeeper
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Match the x86_64/arm64 default. Addresses the existing
+"TODO: schuffelen - fix behavior on riscv64" in this block — the
+guest-side rust_nonsecure HALs work fine on riscv64.
+
+Test: aosp_cf_riscv64_phone-trunk_staging-userdebug boots on
+      Cuttlefish-on-K3; guest keymint + gatekeeper HALs active.
+
+Change-Id: Icd314666bd8458672513f9780dfc3f84d00950bb
+Signed-off-by: Jun Sun <jsun@junsun.net>
+---
+ host/commands/assemble_cvd/flags.cc | 18 +++++++-----------
+ 1 file changed, 7 insertions(+), 11 deletions(-)
+
+diff --git a/host/commands/assemble_cvd/flags.cc b/host/commands/assemble_cvd/flags.cc
+index 978df685d..bcfa565b8 100644
+--- a/host/commands/assemble_cvd/flags.cc
++++ b/host/commands/assemble_cvd/flags.cc
+@@ -1233,17 +1233,13 @@ Result<CuttlefishConfig> InitializeCuttlefishConfiguration(
+   tmp_config_obj.set_vm_manager(vmm_mode);
+   tmp_config_obj.set_ap_vm_manager(vm_manager_vec[0] + "_openwrt");
+ 
+-  // TODO: schuffelen - fix behavior on riscv64
+-  if (guest_configs[0].target_arch == Arch::RiscV64) {
+-    static constexpr char kRiscv64Secure[] = "keymint,gatekeeper,oemlock";
+-    SetCommandLineOptionWithMode("secure_hals", kRiscv64Secure,
+-                                 google::FlagSettingMode::SET_FLAGS_DEFAULT);
+-  } else {
+-    static constexpr char kDefaultSecure[] =
+-        "oemlock,guest_keymint_insecure,guest_gatekeeper_insecure";
+-    SetCommandLineOptionWithMode("secure_hals", kDefaultSecure,
+-                                 google::FlagSettingMode::SET_FLAGS_DEFAULT);
+-  }
++  // Use guest-side keymint+gatekeeper for all arches (mirrors x86_64/arm64).
++  // Closes the schuffelen TODO ("fix behavior on riscv64"). oemlock + libtpms TPM
++  // remain in host-side secure_env for all arches.
++  static constexpr char kDefaultSecure[] =
++      "oemlock,guest_keymint_insecure,guest_gatekeeper_insecure";
++  SetCommandLineOptionWithMode("secure_hals", kDefaultSecure,
++                               google::FlagSettingMode::SET_FLAGS_DEFAULT);
+   auto secure_hals = CF_EXPECT(ParseSecureHals(FLAGS_secure_hals));
+   CF_EXPECT(ValidateSecureHals(secure_hals));
+   tmp_config_obj.set_secure_hals(secure_hals);
+-- 
+2.43.0
+
