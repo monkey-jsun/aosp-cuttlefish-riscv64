@@ -139,10 +139,131 @@ m dist
 Output: `out/dist/aosp_cf_riscv64_phone-img-jsun.zip` (~830 MB). Deploy by extracting into the cuttlefish product dir on the host (`cf-data/product/`), the same way Google's CI img zip is deployed.
 
 ## Under the Hood - crosvm
-TODO 
+
+### Overview
+
+Custom RISC-V build of [crosvm](https://crosvm.dev/), Google's Rust-based VMM.
+Used by Cuttlefish as the VM manager (`launch_cvd` invokes crosvm to create
+the guest VM via KVM).
+
+Fork: <https://github.com/monkey-jsun/crosvm> — branch `riscv64`, pinned at
+tag `cf-k3-v1.0`. Upstream Google crosvm has initial RISC-V scaffolding but
+is incomplete for actually booting Android.
+
+Deviations from upstream Google crosvm (10 patches):
+
+1. **FDT generation** queries ISA extensions and MMU type from KVM rather
+   than hardcoding; adds serial nodes, stdout-path, FDT-dump support, and
+   `android_fstab` entries.
+2. **Memory layout** places FDT/initrd above kernel BSS; enlarges the MMIO
+   region from 1 MB to 32 MB to fit cuttlefish's device set.
+3. **BIOS loading** support (cuttlefish uses U-Boot as BIOS on riscv64).
+4. **APLIC enablement** in the KVM in-kernel AIA path; caps `nr_sources` to
+   the per-vsfile id count reported by KVM (kernel constraint).
+5. **SBI exit logging** for unhandled SBI calls (debug aid).
+
+All patches have been submitted upstream via Gerrit
+([CL URLs](https://chromium-review.googlesource.com/q/owner:jsun%40junsun.net+project:crosvm/crosvm)).
+
+
+### Reproduction recipe
+
+Build host: Linux riscv64. Toolchain: Rust 1.88+, plus `build-essential`,
+`pkg-config`, `libcap-dev`, `libwayland-dev`, `protobuf-compiler`.
+
+#### 1. Clone the fork
+
+```sh
+git clone https://github.com/monkey-jsun/crosvm.git
+cd crosvm
+git checkout cf-k3-v1.0
+```
+
+#### 2. Build
+
+```sh
+cargo build --release \
+    --features android-sparse,composite-disk,fs_runtime_ugid_map,audio_aaudio,android_display,android_display_stub,libaaudio_stub
+```
+
+Excluded features:
+
+- `media` — v4l2r bindgen fails on riscv64 (clang can't handle the riscv64
+  ABI for `videodev2.h`).
+- `gdb` — causes vCPU run-loop interference (RCU stall) under riscv64 KVM.
+
+Wall-clock for a clean build: ~30 min.
+
+Output: `target/release/crosvm` (~12 MB).
 
 ## Under the Hood - u-boot
-TODO 
+
+### Overview
+
+Custom riscv64 build of U-Boot for Cuttlefish. AOSP builds bootloader
+binaries per VM-manager + arch combination, but does not currently produce
+one for `riscv64 + crosvm`, so we build it from a fork.
+
+Fork: <https://github.com/monkey-jsun/u-boot> — branch `riscv64`, pinned at
+tag `cf-k3-v1.0`. Base: u-boot 2024.04 (via AOSP `u-boot-mainline`).
+
+Deviations from AOSP `u-boot-mainline` (3 patches; all submitted to AOSP
+Gerrit):
+
+1. **virtio_console.c compile fix** — GCC on riscv64 rejects
+   `static const size_t` at file scope when later used as an array dimension.
+   Switched to `#define`.
+2. **default_env.txt preboot line** — `preboot=setenv fdtaddr ${fdtcontroladdr}`.
+   crosvm places the FDT at a dynamic address; U-Boot saves it as
+   `${fdtcontroladdr}` then relocates to high memory, overwriting the original.
+   The preboot line carries the relocated FDT address through to `boot_android`.
+3. **`crosvm-riscv64.fragment`** — new config fragment that sets the same FDT
+   fix via `CONFIG_PREBOOT` (used when `CONFIG_USE_DEFAULT_ENV_FILE` is off).
+   Mirrors the existing `crosvm-aarch64.fragment` / `crosvm-x86_64.fragment`.
+
+Full per-patch detail and rationale live in the fork's own build doc:
+[`doc/README.cuttlefish-crosvm-riscv64`](https://github.com/monkey-jsun/u-boot/blob/riscv64/doc/README.cuttlefish-crosvm-riscv64).
+
+
+### Reproduction recipe
+
+Build host: Linux riscv64.
+
+#### 1. Clone the fork and the AOSP sibling repos
+
+U-Boot's build expects two AOSP sibling repos at fixed relative paths
+(via symlinks `lib/libxbc/...` → `../../../bootable/libbootloader/libxbc/...`
+and `scripts/dtc/...` → `../../external/dtc/...`).
+
+```sh
+mkdir uboot && cd uboot
+git clone https://github.com/monkey-jsun/u-boot.git
+cd u-boot && git checkout cf-k3-v1.0 && cd ..
+git clone --depth 1 \
+    https://android.googlesource.com/platform/external/dtc \
+    external/dtc
+git clone --depth 1 \
+    https://android.googlesource.com/platform/bootable/libbootloader \
+    bootable/libbootloader
+```
+
+#### 2. Build
+
+```sh
+cd u-boot
+scripts/kconfig/merge_config.sh -m -r \
+    configs/qemu-riscv64_smode_defconfig \
+    qemu-minimal.fragment \
+    riscv64.fragment \
+    cuttlefish.fragment \
+    crosvm.fragment \
+    crosvm-riscv64.fragment \
+    avb_unlocked.fragment
+make olddefconfig
+make -j$(nproc)
+```
+
+Output: `u-boot.bin` (~750 KB).
 
 ## Under the Hood - Android Cuttlefish
 TODO 
