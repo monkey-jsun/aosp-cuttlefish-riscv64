@@ -11,32 +11,45 @@ Since this is first attempt in the world, it needs to tie many different pieces 
 - [Cuttlefish host container](https://github.com/monkey-jsun/cuttlefish-host-container) extension for running the image
 - [K3 host kernel](https://github.com/monkey-jsun/linux-6.18-k3) support
 
-**Status:** Milestone v1.0 (WebRTC) achieved 2026-05-31 — phone screen visible in a browser via WebRTC streaming on the K3 host.
+**Status:** Milestone v1.0 (WebRTC and adb connection) achieved 2026-05-31 — phone screen visible in a browser via WebRTC streaming on the K3 host.
 
 ## For the Impatient
-- Download k3 kernel deb package and upgrade k3 kernel
-- Download [aosp cf-k3-v1.0 image zip](https://github.com/monkey-jsun/aosp-cuttlefish-riscv64/releases/download/cf-k3-v1.0/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip).
-- Download [cvd-host package cf-k3-v1.0 version](https://github.com/monkey-jsun/android-cuttlefish/releases/download/cf-k3-v1.0/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz).
-- Build, init and run with cuttlefish host container:
-  ```sh
-  git clone -b riscv64 https://github.com/monkey-jsun/cuttlefish-host-container
-  cd cuttlefish-host-container
 
-  # one-time
-  docker build . -t cf-host
+**Host requirements**
 
-  # whenever artifacts change
-  ./cf-init.sh -H <path-to>/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz \
-               -P <path-to>/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip
+- K3 board or another RISC-V board with HW KVM support
+- RVA23 baseline ISA (required by the AOSP guest)
+- `VHOST_VSOCK` and `VHOST_NET` kernel modules
+- Docker
+- ≥ 2 host CPU cores available to the container
 
-  ./cf-run.sh
+**Download and install artifacts**
 
-  # Connect (from any host that can reach the riscv host):
-  #   WebRTC:  https://<riscv host ip>:8444
-  #   adb:     adb connect <riscv host ip>:6520
+- [k3 host kernel cf-k3-v1.0 deb](https://github.com/monkey-jsun/linux-6.18-k3/releases/download/cf-k3-v1.0/linux-image-6.18.3-cf-k3-1.0_6.18.3-gbd4d543ba873-8_riscv64.deb), then `sudo dpkg -i <deb> && sudo reboot`.
+- [aosp cf-k3-v1.0 image zip](https://github.com/monkey-jsun/aosp-cuttlefish-riscv64/releases/download/cf-k3-v1.0/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip)
+- [cvd-host package cf-k3-v1.0](https://github.com/monkey-jsun/android-cuttlefish/releases/download/cf-k3-v1.0/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz)
 
-  ./cf-stop.sh
-  ```
+**Build, init and run with cuttlefish host container**
+
+```sh
+git clone -b riscv64 https://github.com/monkey-jsun/cuttlefish-host-container
+cd cuttlefish-host-container
+
+# one-time
+docker build . -t cf-host
+
+# whenever artifacts change
+./cf-init.sh -H <path-to>/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz \
+             -P <path-to>/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip
+
+./cf-run.sh
+
+# Connect (from any host that can reach the riscv host):
+#   WebRTC:  https://<riscv host ip>:8444
+#   adb:     adb connect <riscv host ip>:6520
+
+./cf-stop.sh
+```
 
 ## Under the Hood - AOSP image
 
@@ -351,5 +364,71 @@ tools/buildutils/build_package.sh base                           # → 5 .debs a
 tools/buildutils/cf-bazel-build.sh \
     //cuttlefish/package/cvd_host_riscv64:cvd_host_package_riscv64
                                                                  # → cvd_host_package_riscv64.tar.gz
+```
+
+## Under the Hood - k3 host kernel
+
+### Overview
+
+Custom riscv64 build of Linux 6.18 for the SpaceMIT K3 board, providing the KVM
+hypervisor support that Cuttlefish needs to launch the AOSP guest under crosvm.
+
+Fork: <https://github.com/monkey-jsun/linux-6.18-k3> — branch `cuttlefish-on-k3`,
+pinned at tag `cf-k3-v1.0`. Base: `spacemit-com/linux-6.18`.
+
+Deviations from the SpaceMiT base kernel (5 patches):
+
+1. **IMSIC RV64 atomic RMW** — `imsic_mrif_atomic_rmw` was using
+   `lr.w/sc.w` on a 64-bit field; switched to `lr.d/sc.d`. Required for IMSIC
+   message-signaled interrupt delivery to the guest.
+2. **AIA EMUL skip silicon-ID-cap** — AIA emulation mode was capping `nr_sources`
+   against a silicon-reported ID width that doesn't apply when KVM is fully
+   emulating the IMSIC.
+3. **VSTIMECMP mirror** — keeps a software mirror of the guest `vstimecmp` CSR
+   to correctly arm host timers for the guest.
+4. **`hmp_get_cpumask` EXPORT_SYMBOL_GPL** — required so an out-of-tree KVM
+   module can resolve the symbol when SpaceMiT's hmp scheduler hook is in use.
+5. **KVM=m enablement** — drop the static-key RO marker
+   (`DEFINE_STATIC_KEY_FALSE_RO(use_hcontext)` → `DEFINE_STATIC_KEY_FALSE`) so
+   that loading `kvm.ko` as a module on RV64 doesn't oops on the jump-table
+   write to a sealed RO key. Enables hot reload-cycle for KVM development.
+
+Patches 1–3 submitted to `linux-riscv@lists.infradead.org`; patch 4 submitted
+to `spacemit-com` upstream.
+
+
+### Reproduction recipe
+
+Build host: Linux riscv64 (native build on K3 fits comfortably).
+
+#### 1. Clone the fork
+
+```sh
+mkdir -p kernel && cd kernel
+git clone https://github.com/monkey-jsun/linux-6.18-k3.git
+cd linux-6.18-k3
+git checkout cf-k3-v1.0
+```
+
+#### 2. Build the deb
+
+```sh
+cp config-aia2-kvm-modular .config
+touch .scmversion
+make olddefconfig
+make -j$(nproc) LOCALVERSION=-cf-k3-1.0 bindeb-pkg
+```
+
+Wall-clock for a clean build on K3: ~45 min.
+
+Output: `../linux-image-6.18.3-cf-k3-1.0_*riscv64.deb` (and matching `linux-headers` / `linux-libc-dev` debs).
+
+#### 3. Install
+
+```sh
+sudo dpkg -i ../linux-image-6.18.3-cf-k3-1.0_*riscv64.deb
+sudo reboot
+# verify after reboot:
+uname -r   # 6.18.3-cf-k3-1.0
 ```
 
