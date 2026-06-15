@@ -17,9 +17,21 @@ Since this is first attempt in the world, it needs to tie many different pieces 
 TODO - more details and links later:
 - Download k3 kernel deb package and upgrade k3 kernel
 - Download aosp cf-k3-v1.0 image zip file
-- Download cvd-host package cf-k3-v1.0 version.
-- Build, init and run with cuttlefish host container
-  - TODO, cf-build.sh, cf-init.sh, cf-run.sh, cf-stop.sh
+- Download [cvd-host package cf-k3-v1.0 version](https://github.com/monkey-jsun/android-cuttlefish/releases/download/cf-k3-v1.0/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz).
+- Build, init and run with cuttlefish host container:
+  ```sh
+  git clone -b riscv64 https://github.com/monkey-jsun/cuttlefish-host-container
+  cd cuttlefish-host-container
+
+  docker build . -t cf-host                                            # one-time
+  ./cf-init.sh -H <path-to>/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz \
+               -P <path-to>/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip   # whenever artifacts change
+  ./cf-run.sh                                                          # start
+  # Connect (from any host that can reach the K3):
+  #   WebRTC:  https://<riscv host ip>:8444
+  #   adb:     adb connect <riscv host ip>:6520
+  ./cf-stop.sh
+  ```
 
 ## Under the Hood - AOSP image
 
@@ -266,5 +278,56 @@ make -j$(nproc)
 Output: `u-boot.bin` (~750 KB).
 
 ## Under the Hood - Android Cuttlefish
-TODO 
+
+### Overview
+
+Custom riscv64 build of Google's [Cuttlefish](https://source.android.com/docs/devices/cuttlefish), the AOSP virtual Android device tooling. Used here to host the AOSP riscv64 guest image on a SpaceMIT K3 board.
+
+Fork: <https://github.com/monkey-jsun/android-cuttlefish> — branch `dev/riscv64`, pinned at tag `cf-k3-v1.0`. Upstream android-cuttlefish ships build flows only for x86_64 and arm64.
+
+At a high level, the fork adds **riscv64 support**, wires **crosvm** as the riscv64 VM manager, and fills in **WebRTC streaming**:
+
+1. **riscv64 build infrastructure** — host-side and container-based build flows under `tools/buildutils/`, plus a new `cvd_host_package_riscv64` bazel target, so the riscv64 host-side artifacts exist at all.
+2. **crosvm wiring** — `assemble_cvd` defaults for riscv64 (guest-side keymint + gatekeeper, bootconfig handling) so crosvm boots the AOSP guest cleanly.
+3. **WebRTC operator** — missing operator-side JS assets added to the host `.deb` so the WebRTC client streams end-to-end.
+
+Some of the above are already upstream ([merged PRs](https://github.com/google/android-cuttlefish/pulls?q=is%3Apr+author%3Amonkey-jsun+is%3Amerged)); others are pending ([open PRs](https://github.com/google/android-cuttlefish/pulls?q=is%3Apr+author%3Amonkey-jsun+is%3Aopen)) and will be re-worked for upstream. More are coming.
+
+
+### Reproduction recipe
+
+Build host: Linux riscv64 (native) or Linux x86_64 (via qemu-user binfmt; slower). Toolchain: just `docker` for the default container build, or bazel + clang-19 + rustc on the host for the alternative host build.
+
+#### 1. Clone the fork
+
+```sh
+git clone https://github.com/monkey-jsun/android-cuttlefish.git
+cd android-cuttlefish
+git checkout cf-k3-v1.0
+```
+
+#### 2. Build — container (default)
+
+```sh
+tools/buildutils/build-cf-riscv64.sh
+```
+
+On x86_64 hosts the script checks that `qemu-user-static` + `binfmt-support` are installed and that the `qemu-riscv64` binfmt is registered with the `C` flag.
+
+Outputs at the repo root:
+
+- 5 host .debs: `cuttlefish-base_1.50.0_riscv64.deb` (126 MB) + `cuttlefish-common` / `-defaults` / `-integration` / `-metrics`.
+- `cvd_host_package_riscv64.tar.gz` (~225 MB).
+
+Wall-clock for a clean first build: ~3.5 h on x86_64 under qemu (~2 h image build incl. bazel-from-source, ~1.5 h cuttlefish C++ tree); much faster on native riscv64.
+
+#### 2'. Build — host (alternative, riscv64 only)
+
+```sh
+tools/buildutils/setup-riscv64-host.sh                          # once
+tools/buildutils/build_package.sh base                           # → 5 .debs at repo root
+tools/buildutils/cf-bazel-build.sh \
+    //cuttlefish/package/cvd_host_riscv64:cvd_host_package_riscv64
+                                                                 # → cvd_host_package_riscv64.tar.gz
+```
 
