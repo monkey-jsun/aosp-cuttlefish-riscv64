@@ -14,22 +14,27 @@ Since this is first attempt in the world, it needs to tie many different pieces 
 **Status:** Milestone v1.0 (WebRTC) achieved 2026-05-31 — phone screen visible in a browser via WebRTC streaming on the K3 host.
 
 ## For the Impatient
-TODO - more details and links later:
 - Download k3 kernel deb package and upgrade k3 kernel
-- Download aosp cf-k3-v1.0 image zip file
+- Download [aosp cf-k3-v1.0 image zip](https://github.com/monkey-jsun/aosp-cuttlefish-riscv64/releases/download/cf-k3-v1.0/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip).
 - Download [cvd-host package cf-k3-v1.0 version](https://github.com/monkey-jsun/android-cuttlefish/releases/download/cf-k3-v1.0/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz).
 - Build, init and run with cuttlefish host container:
   ```sh
   git clone -b riscv64 https://github.com/monkey-jsun/cuttlefish-host-container
   cd cuttlefish-host-container
 
-  docker build . -t cf-host                                            # one-time
+  # one-time
+  docker build . -t cf-host
+
+  # whenever artifacts change
   ./cf-init.sh -H <path-to>/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz \
-               -P <path-to>/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip   # whenever artifacts change
-  ./cf-run.sh                                                          # start
-  # Connect (from any host that can reach the K3):
+               -P <path-to>/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip
+
+  ./cf-run.sh
+
+  # Connect (from any host that can reach the riscv host):
   #   WebRTC:  https://<riscv host ip>:8444
   #   adb:     adb connect <riscv host ip>:6520
+
   ./cf-stop.sh
   ```
 
@@ -43,6 +48,21 @@ Equivalent to Google's published [`aosp_cf_riscv64_phone-userdebug` CI builds](h
 
 1. **Kernel upgraded to 6.10+** for RISC-V AIA (IMSIC/APLIC) support — the AOSP-checked-in prebuilt is stale at 6.8.
 2. **Guest-side keymint + gatekeeper** as the riscv64 default (`guest_keymint_insecure`, `guest_gatekeeper_insecure`), matching x86_64/arm64. AOSP currently hardcodes riscv64 to host-side as a placeholder.
+
+
+### Deviations (4 patch series; sources in [`patches/`](patches/))
+
+Kernel:
+
+1. **AIA enablement** — new `riscv64_aia.fragment` setting `CONFIG_RISCV_INTC/APLIC/IMSIC=y` for the cuttlefish virtual-device build, plus `CONFIG_WERROR` disabled (matches arm).
+2. **Build-fix workarounds** for rolling-drift on android-mainline-riscv64 (Rust toolchain pin bump, `kernel_riscv64.outs` override). Expected to disappear when upstream catches up.
+
+AOSP cuttlefish:
+
+3. **secure_hals default for riscv64** — `assemble_cvd/flags.cc` flips to guest-side keymint/gatekeeper, closing the existing `TODO: schuffelen` block.
+4. **Debug-userland scaffolding** — SELinux permissive + multi-phase init pause shell. Inert without `androidboot.debug_pause_console=hvc20`; normal boot unchanged.
+
+Upstream submission status: pending.
 
 
 ### Reproduction recipe
@@ -147,6 +167,8 @@ source build/envsetup.sh
 lunch aosp_cf_riscv64_phone-trunk_staging-userdebug
 m dist
 ```
+
+Wall-clock for a clean first build: ~2–4 h on a decent x86_64 host; incremental rebuilds are minutes.
 
 Output: `out/dist/aosp_cf_riscv64_phone-img-jsun.zip` (~830 MB). Deploy by extracting into the cuttlefish product dir on the host (`cf-data/product/`), the same way Google's CI img zip is deployed.
 
