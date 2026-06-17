@@ -432,3 +432,16 @@ sudo reboot
 uname -r   # 6.18.3-cf-k3-1.0
 ```
 
+## Release History
+
+### v1.0, Jun 15, 2026
+- source-controlled, re-producible of first successful aosp booting on cuttlefish on k3 (5/31, 2026)
+  - webrtc connection at port 8444
+  - adb connection at port 6520
+  - home screen alive and interactive
+- aosp android16-qpr2-release branch
+  - mainline kernel 6.19.0
+- cuttlefish v1.50.0 (sizeable  modifications for riscv64)
+- crosvm (May 2026 snapshot)
+- u-boot (2024.04)
+- k3 host kernel 6.18.3
