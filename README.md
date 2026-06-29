@@ -27,25 +27,25 @@ Since this is first attempt in the world, it needs to tie many different pieces 
 
 - [k3 host kernel cf-k3-v1.0 deb](https://github.com/monkey-jsun/linux-6.18-k3/releases/download/cf-k3-v1.0/linux-image-6.18.3-cf-k3-1.0_6.18.3-gbd4d543ba873-8_riscv64.deb), then `sudo dpkg -i <deb> && sudo reboot`.
 - [aosp cf-k3-v1.0 image zip](https://github.com/monkey-jsun/aosp-cuttlefish-riscv64/releases/download/cf-k3-v1.0/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip)
-- [cvd-host package cf-k3-v1.0](https://github.com/monkey-jsun/android-cuttlefish/releases/download/cf-k3-v1.0/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz)
+- [cvd-host package cf-k3-v1.1](https://github.com/monkey-jsun/android-cuttlefish/releases/download/cf-k3-v1.1/cvd_host_package_riscv64.tar.gz)
 
 **Build, init and run with cuttlefish host container**
 
 ```sh
-git clone -b riscv64 https://github.com/monkey-jsun/cuttlefish-host-container
+git clone https://github.com/monkey-jsun/cuttlefish-host-container
 cd cuttlefish-host-container
 
 # one-time
-docker build . -t cf-host
+./cf-build.sh
 
 # whenever artifacts change
-./cf-init.sh -H <path-to>/cvd_host_package_riscv64-cf-k3-v1.0.tar.gz \
+./cf-init.sh -H <path-to>/cvd_host_package_riscv64.tar.gz \
              -P <path-to>/aosp_cf_riscv64_phone-img-cf-k3-v1.0.zip
 
 ./cf-run.sh
 
 # Connect (from any host that can reach the riscv host):
-#   WebRTC:  https://<riscv host ip>:8444
+#   WebRTC:  https://<riscv host ip>:8443
 #   adb:     adb connect <riscv host ip>:6520
 
 ./cf-stop.sh
@@ -194,7 +194,7 @@ Used by Cuttlefish as the VM manager (`launch_cvd` invokes crosvm to create
 the guest VM via KVM).
 
 Fork: <https://github.com/monkey-jsun/crosvm> — branch `riscv64`, pinned at
-tag `cf-k3-v1.0`. Upstream Google crosvm has initial RISC-V scaffolding but
+tag `cf-k3-v1.1`. Upstream Google crosvm has initial RISC-V scaffolding but
 is incomplete for actually booting Android.
 
 Deviations from upstream Google crosvm (10 patches):
@@ -223,7 +223,7 @@ Build host: Linux riscv64. Toolchain: Rust 1.88+, plus `build-essential`,
 ```sh
 git clone https://github.com/monkey-jsun/crosvm.git
 cd crosvm
-git checkout cf-k3-v1.0
+git checkout cf-k3-v1.1
 ```
 
 #### 2. Build
@@ -252,21 +252,20 @@ binaries per VM-manager + arch combination, but does not currently produce
 one for `riscv64 + crosvm`, so we build it from a fork.
 
 Fork: <https://github.com/monkey-jsun/u-boot> — branch `riscv64`, pinned at
-tag `cf-k3-v1.0`. Base: u-boot 2024.04 (via AOSP `u-boot-mainline`).
+tag `cf-k3-v1.1`. Base: u-boot 2024.04 (via AOSP `u-boot-mainline`).
 
-Deviations from AOSP `u-boot-mainline` (3 patches; all submitted to AOSP
+Deviations from AOSP `u-boot-mainline` (2 patches; both submitted to AOSP
 Gerrit):
 
 1. **virtio_console.c compile fix** — GCC on riscv64 rejects
    `static const size_t` at file scope when later used as an array dimension.
    Switched to `#define`.
-2. **default_env.txt preboot line** — `preboot=setenv fdtaddr ${fdtcontroladdr}`.
-   crosvm places the FDT at a dynamic address; U-Boot saves it as
-   `${fdtcontroladdr}` then relocates to high memory, overwriting the original.
-   The preboot line carries the relocated FDT address through to `boot_android`.
-3. **`crosvm-riscv64.fragment`** — new config fragment that sets the same FDT
-   fix via `CONFIG_PREBOOT` (used when `CONFIG_USE_DEFAULT_ENV_FILE` is off).
-   Mirrors the existing `crosvm-aarch64.fragment` / `crosvm-x86_64.fragment`.
+2. **`qemu-riscv board_late_init()` FDT fix** — exports env `fdtaddr` from
+   `gd->fdt_blob` (post-relocation) rather than `gd->arch.firmware_fdt_addr`
+   (pre-relocation). On crosvm, the firmware-placed FDT sits where U-Boot's
+   own relocation lands and gets clobbered; the post-relocation pointer is
+   always valid. Fix is arch-specific (qemu-riscv board file), works for
+   both crosvm and the upstream QEMU virt flow.
 
 Full per-patch detail and rationale live in the fork's own build doc:
 [`doc/README.cuttlefish-crosvm-riscv64`](https://github.com/monkey-jsun/u-boot/blob/riscv64/doc/README.cuttlefish-crosvm-riscv64).
@@ -285,7 +284,7 @@ and `scripts/dtc/...` → `../../external/dtc/...`).
 ```sh
 mkdir uboot && cd uboot
 git clone https://github.com/monkey-jsun/u-boot.git
-cd u-boot && git checkout cf-k3-v1.0 && cd ..
+cd u-boot && git checkout cf-k3-v1.1 && cd ..
 git clone --depth 1 \
     https://android.googlesource.com/platform/external/dtc \
     external/dtc
@@ -304,7 +303,6 @@ scripts/kconfig/merge_config.sh -m -r \
     riscv64.fragment \
     cuttlefish.fragment \
     crosvm.fragment \
-    crosvm-riscv64.fragment \
     avb_unlocked.fragment
 make olddefconfig
 make -j$(nproc)
@@ -318,7 +316,7 @@ Output: `u-boot.bin` (~750 KB).
 
 Custom riscv64 build of Google's [Cuttlefish](https://source.android.com/docs/devices/cuttlefish), the AOSP virtual Android device tooling. Used here to host the AOSP riscv64 guest image on a SpaceMIT K3 board.
 
-Fork: <https://github.com/monkey-jsun/android-cuttlefish> — branch `dev/riscv64`, pinned at tag `cf-k3-v1.0`. Upstream android-cuttlefish ships build flows only for x86_64 and arm64.
+Fork: <https://github.com/monkey-jsun/android-cuttlefish> — branch `dev/riscv64`, pinned at tag `cf-k3-v1.1`. Upstream android-cuttlefish ships build flows only for x86_64 and arm64.
 
 At a high level, the fork adds **riscv64 support**, wires **crosvm** as the riscv64 VM manager, and fills in **WebRTC streaming**:
 
@@ -338,7 +336,7 @@ Build host: Linux riscv64 (native) or Linux x86_64 (via qemu-user binfmt; slower
 ```sh
 git clone https://github.com/monkey-jsun/android-cuttlefish.git
 cd android-cuttlefish
-git checkout cf-k3-v1.0
+git checkout cf-k3-v1.1
 ```
 
 #### 2. Build — container (default)
@@ -351,8 +349,8 @@ On x86_64 hosts the script checks that `qemu-user-static` + `binfmt-support` are
 
 Outputs at the repo root:
 
-- 5 host .debs: `cuttlefish-base_1.50.0_riscv64.deb` (126 MB) + `cuttlefish-common` / `-defaults` / `-integration` / `-metrics`.
-- `cvd_host_package_riscv64.tar.gz` (~225 MB).
+- 5 host .debs: `cuttlefish-base_1.54.0_riscv64.deb` (121 MB) + `cuttlefish-common` / `-defaults` / `-integration` / `-metrics`. (Filename version `1.54.0` reflects upstream `debian/changelog`; tree was rebased onto upstream `v1.54.1` — see release notes.)
+- `cvd_host_package_riscv64.tar.gz` (~215 MB).
 
 Wall-clock for a clean first build: ~3.5 h on x86_64 under qemu (~2 h image build incl. bazel-from-source, ~1.5 h cuttlefish C++ tree); much faster on native riscv64.
 
@@ -433,6 +431,13 @@ uname -r   # 6.18.3-cf-k3-1.0
 ```
 
 ## Release History
+
+### v1.1, Jun 29, 2026
+- cuttlefish: rebased android-cuttlefish onto upstream v1.54.1 (from v1.50.0); cleaned up for upstreaming.
+- cuttlefish: riscv64 overlays moved into `base/cvd/build_external/<dep>/` per the upstream contributor pattern — no scattered changes in core bazel files.
+- cf-host-container : merged and unified to support all host arches and guest arches (x86_64, arm64, riscv64); drop host-mode network for less host pollution.
+- crosvm + u-boot: pins bumped to cf-k3-v1.1, but functionally same as cf-k3-v1.0.
+- Kernel and AOSP guest image unchanged from v1.0.
 
 ### v1.0, Jun 15, 2026
 - source-controlled, re-producible of first successful aosp booting on cuttlefish on k3 (5/31, 2026)
